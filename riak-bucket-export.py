@@ -123,6 +123,15 @@ def get_key(key, tries = 10, attempt = 0):
 def sig_handler(signal, frame):
     sys.exit(0)
 
+def make_bucket_url(bucket, host="localhost", port=8098, bucket_type="default"):
+    return urlparse.urlunparse(
+        ("http",
+        "%s:%d" % (host, port),
+        ("/types/" + quote(bucket_type) if bucket_type != "default" else "") + "/buckets/" + quote(bucket) + "/keys",
+        "",
+        "",
+        ""))
+
 def parse_keylist(keys_docs):
     keys = []
     decoder = json.JSONDecoder()
@@ -149,13 +158,9 @@ def main():
     logger = setup_logger()
     logger.info("stream=%s", args.no_stream)
 
-    keys_url = urlparse.urlunparse(
-        ("http",
-        "%s:%d" % (args.host, args.port),
-        ("/types/" + quote(args.bucket_type) if args.bucket_type != "default" else "") + "/buckets/" + quote(args.bucket) + "/keys",
-        "",
-        "keys=" + ("stream" if args.no_stream else "true"),
-        ""))
+    bucket_base_url = make_bucket_url(args.bucket, args.host, args.port, args.bucket_type)
+    keys_url = bucket_base_url + "?keys=" + ("stream" if args.no_stream else "true")
+
     keys_docs = urllib2.urlopen(keys_url, timeout = args.list_timeout).read()
     logger.info("Retrieved key list from server. Parsing...")
 
@@ -164,15 +169,7 @@ def main():
     logger.info("Loaded key list from bucket %s: items count = %d",
         (args.bucket_type, args.bucket), keys_count)
 
-    bucket_base_url = urlparse.urlunparse(
-        ("http",
-        "%s:%d" % (args.host, args.port),
-        ("/types/" + quote(args.bucket_type) if args.bucket_type != "default" else "") + "/buckets/" + quote(args.bucket) + "/keys/",
-        "",
-        "",
-        ""))
-
-    env = ChildEnv(bucket_base_url, args.key_timeout, logger)
+    env = ChildEnv(bucket_base_url + "/", args.key_timeout, logger)
     p = multiprocessing.Pool(args.workers, init_child, (env,), args.tasks_per_child)
 
     logger.info("Starting %d workers...", args.workers)
