@@ -133,6 +133,7 @@ def get_key(key, tries = 10, attempt = 0):
 
     except Exception as e:
         logger.warn("Unable to retrieve key %s: %s", repr(key), str(e))
+        return
     return json.dumps(key) + ":  " + res
 
 def sig_handler(signal, frame):
