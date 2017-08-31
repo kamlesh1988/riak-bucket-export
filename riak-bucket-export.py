@@ -11,30 +11,37 @@ import collections
 import signal
 import os
 import email
-import email.utils
+from email.utils import parsedate
 import string
 
-ChildEnv = collections.namedtuple('ChildEnv', ['base_url', 'timeout', 'logger'])
+ChildEnv = collections.namedtuple(
+    'ChildEnv', ['base_url', 'timeout', 'logger'])
+
 
 def check_positive(value):
     ivalue = int(value)
     if ivalue < 0:
-         raise argparse.ArgumentTypeError("%s is an invalid positive int value" % value)
+        raise argparse.ArgumentTypeError(
+            "%s is an invalid positive int value" % value)
     return ivalue
+
 
 def check_port(value):
     ivalue = int(value)
     if not (0 < ivalue < 65536):
-         raise argparse.ArgumentTypeError("%s is not a valid port number" % value)
+        raise argparse.ArgumentTypeError(
+            "%s is not a valid port number" % value)
     return ivalue
 
 
 quote = urllib.quote_plus
 
+
 def parse_args():
     class LogLevelMap(dict):
         def __contains__(self, arg):
-            return super(LogLevelMap, self).__contains__(arg) or arg in self.values()
+            return (super(LogLevelMap, self).__contains__(arg)
+                    or arg in self.values())
 
     loglevels = LogLevelMap({
         'debug': logging.DEBUG,
@@ -47,21 +54,56 @@ def parse_args():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("bucket", help="name of bucket to dump")
-    parser.add_argument("-H", "--host", help="remote address. Default: localhost", metavar="HOST", default="localhost")
-    parser.add_argument("-p", "--port", help="remote port. Default: 8098", type=check_port, default=8098)
-    parser.add_argument("-b", "--bucket-type", help="type of bucket to dump. Default: no type", default="default")
-    parser.add_argument("-t", "--key-timeout", help="timeout for key query. Default: 5", type=check_positive, default=5)
-    parser.add_argument("-T", "--list-timeout", help="timeout for key listing. Default: 120", type=check_positive, default=120)
-    parser.add_argument("-w", "--workers", help="count of parallel workers used to extract keys. Default: 20", type=check_positive, default=20)
-    parser.add_argument("-B", "--batch-size", help="batch size. Default: 100", type=check_positive, default=100)
-    parser.add_argument("-C", "--tasks-per-child", help="limit tasks per child to prevent memory leaks. Default: None", type=check_positive, default=None)
-    parser.add_argument("-o", "--output-file", help="limit tasks per child to prevent memory leaks. Default: BUCKET.json")
-    parser.add_argument("-l", "--loglevel", help="logging verbosity. Default: warn", type=lambda v: loglevels[v], choices=loglevels, default="warn")
+    parser.add_argument("-H", "--host",
+                        help="remote address. Default: localhost",
+                        metavar="HOST",
+                        default="localhost")
+    parser.add_argument("-p", "--port",
+                        help="remote port. Default: 8098",
+                        type=check_port,
+                        default=8098)
+    parser.add_argument("-b", "--bucket-type",
+                        help="type of bucket to dump. Default: no type",
+                        default="default")
+    parser.add_argument("-t", "--key-timeout",
+                        help="timeout for key query. Default: 5",
+                        type=check_positive, default=5)
+    parser.add_argument("-T", "--list-timeout",
+                        help="timeout for key listing. Default: 120",
+                        type=check_positive,
+                        default=120)
+    parser.add_argument("-w", "--workers",
+                        help="count of parallel workers used to extract keys. "
+                        "Default: 20",
+                        type=check_positive,
+                        default=20)
+    parser.add_argument("-B", "--batch-size",
+                        help="batch size. Default: 100",
+                        type=check_positive,
+                        default=100)
+    parser.add_argument("-C", "--tasks-per-child",
+                        help="limit tasks per child to prevent memory leaks. "
+                        "Default: None",
+                        type=check_positive,
+                        default=None)
+    parser.add_argument("-o", "--output-file",
+                        help="limit tasks per child to prevent memory leaks. "
+                        "Default: BUCKET.json")
+    parser.add_argument("-l", "--loglevel",
+                        help="logging verbosity. Default: warn",
+                        type=lambda v: loglevels[v],
+                        choices=loglevels,
+                        default="warn")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--stream", help="use streaming when keys are retrieved. Default", action='store_true')
-    group.add_argument("--no-stream", help="do not use streaming when keys are retrieved.", action='store_false')
+    group.add_argument("--stream",
+                       help="use streaming when keys are retrieved. Default",
+                       action='store_true')
+    group.add_argument("--no-stream",
+                       help="do not use streaming when keys are retrieved.",
+                       action='store_false')
     args = parser.parse_args()
     return args
+
 
 def setup_logger(loglevel):
     logger = multiprocessing.get_logger()
@@ -74,11 +116,14 @@ def setup_logger(loglevel):
     logger.addHandler(log_handler)
     return logger
 
+
 child_env = None
+
 
 def init_child(env):
     global child_env
     child_env = env
+
 
 def handle_result(res, ct):
     if ct == 'application/json':
@@ -89,7 +134,8 @@ def handle_result(res, ct):
         raise ValueError("Unknown content-type in response.")
     return out
 
-def get_key(key, tries = 10, attempt = 0):
+
+def get_key(key, tries=10, attempt=0):
     if attempt >= 10:
         return
 
@@ -105,26 +151,32 @@ def get_key(key, tries = 10, attempt = 0):
     except urllib2.HTTPError as e:
         if e.code == 300:
             try:
-                req = urllib2.Request(url, headers={"Accept": "multipart/mixed"})
+                req = urllib2.Request(url,
+                                      headers={"Accept": "multipart/mixed"})
                 resp = urllib2.urlopen(req, timeout=timeout)
                 assert False, "Exception expected instead of OK response"
             except urllib2.HTTPError as e:
                 if e.code == 300:
-                    msgstr = "Content-Type: " + e.info().getheader('Content-Type') + "\r\n\r\n"
+                    msgstr = "Content-Type: "
+                    msgstr += e.info().getheader('Content-Type')
+                    msgstr += "\r\n\r\n"
                     msgstr += e.read()
                     msg = email.message_from_string(msgstr)
                     last = max(msg.get_payload(),
-                        key = lambda m: email.utils.parsedate(m['last-modified']))
+                               key=lambda m: parsedate(m['last-modified']))
 
                     try:
-                        res = handle_result(last.get_payload(), last['content-type'])
+                        res = handle_result(last.get_payload(),
+                                            last['content-type'])
                     except Exception as e:
-                        logger.warn("Unable to retrieve subkeys of key %s: %s", repr(key), str(e))
+                        logger.warn("Unable to retrieve subkeys of key %s: %s",
+                                    repr(key), str(e))
 
                 elif e.code == 406:
                     return get_key(key, tries, attempt + 1)
                 else:
-                    logger.warn("Unable to retrieve subkeys of key %s: %s", repr(key), str(e))
+                    logger.warn("Unable to retrieve subkeys of key %s: %s",
+                                repr(key), str(e))
                     return
 
         else:
@@ -136,17 +188,24 @@ def get_key(key, tries = 10, attempt = 0):
         return
     return json.dumps(key) + ":  " + res
 
+
 def sig_handler(signal, frame):
     sys.exit(0)
 
-def make_bucket_url(bucket, host="localhost", port=8098, bucket_type="default"):
+
+def make_bucket_url(bucket,
+                    host="localhost", port=8098, bucket_type="default"):
     return urlparse.urlunparse(
-        ("http",
-        "%s:%d" % (host, port),
-        ("/types/" + quote(bucket_type) if bucket_type != "default" else "") + "/buckets/" + quote(bucket) + "/keys",
-        "",
-        "",
-        ""))
+                               ("http",
+                                "%s:%d" % (host, port),
+                                (("/types/" + quote(bucket_type)
+                                  if bucket_type != "default"
+                                  else "") +
+                                 "/buckets/" + quote(bucket) + "/keys"),
+                                "",
+                                "",
+                                ""))
+
 
 def parse_keylist(keys_docs):
     keys = []
@@ -166,27 +225,34 @@ def parse_keylist(keys_docs):
         keys.extend(obj["keys"])
     return keys
 
+
 def main():
     signal.signal(signal.SIGINT, sig_handler)
     args = parse_args()
-    out_filename = args.output_file if args.output_file else (args.bucket + ".json")
+    out_filename = (args.output_file
+                    if args.output_file
+                    else (args.bucket + ".json"))
     out = open(out_filename, "w", 1)
     logger = setup_logger(args.loglevel)
     logger.info("stream=%s", args.no_stream)
 
-    bucket_base_url = make_bucket_url(args.bucket, args.host, args.port, args.bucket_type)
-    keys_url = bucket_base_url + "?keys=" + ("stream" if args.no_stream else "true")
+    bucket_base_url = make_bucket_url(
+        args.bucket, args.host, args.port, args.bucket_type)
+    keys_url = bucket_base_url
+    keys_url += "?keys="
+    keys_url += "stream" if args.no_stream else "true"
 
-    keys_docs = urllib2.urlopen(keys_url, timeout = args.list_timeout).read()
+    keys_docs = urllib2.urlopen(keys_url, timeout=args.list_timeout).read()
     logger.info("Retrieved key list from server. Parsing...")
 
     keys = parse_keylist(keys_docs)
     keys_count = len(keys)
     logger.info("Loaded key list from bucket %s: items count = %d",
-        (args.bucket_type, args.bucket), keys_count)
+                (args.bucket_type, args.bucket), keys_count)
 
     env = ChildEnv(bucket_base_url + "/", args.key_timeout, logger)
-    p = multiprocessing.Pool(args.workers, init_child, (env,), args.tasks_per_child)
+    p = multiprocessing.Pool(
+        args.workers, init_child, (env,), args.tasks_per_child)
 
     logger.info("Starting %d workers...", args.workers)
     out.write("{\n")
@@ -208,6 +274,7 @@ def main():
         out.write(last_res + "\n")
     out.write("}\n")
     logger.info("Finished.")
+
 
 if __name__ == '__main__':
     try:
