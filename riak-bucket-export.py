@@ -4,7 +4,6 @@ import sys
 import urllib2
 import urllib
 import multiprocessing
-import json
 import logging
 import argparse
 import urlparse
@@ -13,6 +12,7 @@ import signal
 import os
 import email
 import email.utils
+import string
 
 ChildEnv = collections.namedtuple('ChildEnv', ['base_url', 'timeout', 'logger'])
 
@@ -42,6 +42,9 @@ def parse_args():
     parser.add_argument("-B", "--batch-size", help="batch size. Default: 100", type=check_positive, default=100)
     parser.add_argument("-C", "--tasks-per-child", help="limit tasks per child to prevent memory leaks. Default: None", type=check_positive, default=None)
     parser.add_argument("-o", "--output-file", help="limit tasks per child to prevent memory leaks. Default: BUCKET.json")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--stream", help="use streaming when keys are retrieved. Default", action='store_true')
+    group.add_argument("--no-stream", help="do not use streaming when keys are retrieved.", action='store_false')
     args = parser.parse_args()
     return args
 
@@ -120,22 +123,43 @@ def get_key(key, tries = 10, attempt = 0):
 def sig_handler(signal, frame):
     sys.exit(0)
 
+def parse_keylist(keys_docs):
+    keys = []
+    decoder = json.JSONDecoder()
+    index = 0
+    L = len(keys_docs)
+    while True:
+        while True:
+            if index < L and keys_docs[index] in string.whitespace:
+                index += 1
+            else:
+                break
+        if index >= L:
+            break
+        obj, delta = decoder.raw_decode(buffer(keys_docs, index))
+        index += delta
+        keys.extend(obj["keys"])
+    return keys
+
 def main():
     signal.signal(signal.SIGINT, sig_handler)
     args = parse_args()
     out_filename = args.output_file if args.output_file else (args.bucket + ".json")
     out = open(out_filename, "w", 1)
     logger = setup_logger()
+    logger.info("stream=%s", args.no_stream)
 
     keys_url = urlparse.urlunparse(
         ("http",
         "%s:%d" % (args.host, args.port),
         ("/types/" + quote(args.bucket_type) if args.bucket_type != "default" else "") + "/buckets/" + quote(args.bucket) + "/keys",
         "",
-        "keys=true",
+        "keys=" + ("stream" if args.no_stream else "true"),
         ""))
+    keys_docs = urllib2.urlopen(keys_url, timeout = args.list_timeout).read()
+    logger.info("Retrieved key list from server. Parsing...")
 
-    keys = json.load(urllib2.urlopen(keys_url, timeout = args.list_timeout))["keys"]
+    keys = parse_keylist(keys_docs)
     keys_count = len(keys)
     logger.info("Loaded key list from bucket %s: items count = %d",
         (args.bucket_type, args.bucket), keys_count)
@@ -173,4 +197,11 @@ def main():
     logger.info("Finished.")
 
 if __name__ == '__main__':
+    try:
+        import _json
+        del _json
+        sys.modules['_json'] = None
+    except:
+        pass
+    import json
     main()
