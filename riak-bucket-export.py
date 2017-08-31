@@ -28,9 +28,23 @@ def check_port(value):
          raise argparse.ArgumentTypeError("%s is not a valid port number" % value)
     return ivalue
 
+
 quote = urllib.quote_plus
 
 def parse_args():
+    class LogLevelMap(dict):
+        def __contains__(self, arg):
+            return super(LogLevelMap, self).__contains__(arg) or arg in self.values()
+
+    loglevels = LogLevelMap({
+        'debug': logging.DEBUG,
+        'info': logging.INFO,
+        'warn': logging.WARN,
+        'error': logging.ERROR,
+        'fatal': logging.FATAL,
+        'crit': logging.CRITICAL,
+    })
+
     parser = argparse.ArgumentParser()
     parser.add_argument("bucket", help="name of bucket to dump")
     parser.add_argument("-H", "--host", help="remote address. Default: localhost", metavar="HOST", default="localhost")
@@ -42,15 +56,16 @@ def parse_args():
     parser.add_argument("-B", "--batch-size", help="batch size. Default: 100", type=check_positive, default=100)
     parser.add_argument("-C", "--tasks-per-child", help="limit tasks per child to prevent memory leaks. Default: None", type=check_positive, default=None)
     parser.add_argument("-o", "--output-file", help="limit tasks per child to prevent memory leaks. Default: BUCKET.json")
+    parser.add_argument("-l", "--loglevel", help="logging verbosity. Default: warn", type=lambda v: loglevels[v], choices=loglevels, default="warn")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--stream", help="use streaming when keys are retrieved. Default", action='store_true')
     group.add_argument("--no-stream", help="do not use streaming when keys are retrieved.", action='store_false')
     args = parser.parse_args()
     return args
 
-def setup_logger():
+def setup_logger(loglevel):
     logger = multiprocessing.get_logger()
-    logger.setLevel(logging.INFO)
+    logger.setLevel(loglevel)
     log_handler = logging.StreamHandler(sys.stderr)
     log_handler.setFormatter(
         logging.Formatter(
@@ -155,7 +170,7 @@ def main():
     args = parse_args()
     out_filename = args.output_file if args.output_file else (args.bucket + ".json")
     out = open(out_filename, "w", 1)
-    logger = setup_logger()
+    logger = setup_logger(args.loglevel)
     logger.info("stream=%s", args.no_stream)
 
     bucket_base_url = make_bucket_url(args.bucket, args.host, args.port, args.bucket_type)
