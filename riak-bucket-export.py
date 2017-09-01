@@ -265,23 +265,14 @@ def retrieve_keylist(keys_url, logger, timeout=None, max_mem=2**20):
         obj = json.loads(doc)
         for key in obj["keys"]:
             count += 1
-            out.write(quote(key))
+            out.write(quote(key) + '\n')
     out.seek(0)
+    logger.info("Retrieved key list from server. Parsing...")
 
     def feed_keys(f):
         for line in f:
-            yield unquote(line)
+            yield unquote(line).rstrip()
     return count, feed_keys(out)
-
-
-def retrieve_keylist_inmemory(keys_url, logger, timeout=None):
-    keys_docs = urllib2.urlopen(keys_url, timeout=timeout).read()
-    logger.info("Retrieved key list from server. Parsing...")
-    keys = []
-    for doc in iterate_json_docs(keys_docs):
-        obj = json.loads(doc)
-        keys.extend(obj["keys"])
-    return len(keys), keys
 
 
 class BaseRecordWriter(object):
@@ -315,7 +306,7 @@ class JsonRecordWriter(BaseRecordWriter):
         elif content_type == 'text/plain':
             value = json.dumps(value)
         else:
-            raise ValueError('Unknown content type')
+            raise ValueError('Unknown content type: %s' % repr(content_type))
 
         if self.__need_comma:
             self.__out.write(",\n" + json.dumps(key) + ": " + value)
@@ -392,7 +383,8 @@ def main():
     writer.prolog()
     counter = 0
     for key, value, ct in p.imap_unordered(get_key, keys, args.batch_size):
-        writer.emit(key, value, ct)
+        if value:
+            writer.emit(key, value, ct)
         counter += 1
         if counter % 10000 == 0:
             logger.info("Processed %d records (%.2f%% completed).",
