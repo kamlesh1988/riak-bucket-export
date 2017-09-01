@@ -26,6 +26,14 @@ def check_positive(value):
     return ivalue
 
 
+def check_nonnegative(value):
+    ivalue = int(value)
+    if ivalue <= 0:
+        raise argparse.ArgumentTypeError(
+            "%s is an invalid non-negative int value" % value)
+    return ivalue
+
+
 def check_port(value):
     ivalue = int(value)
     if not (0 < ivalue < 65536):
@@ -88,7 +96,7 @@ def parse_args():
                         default=None)
     parser.add_argument("-o", "--output-file",
                         help="limit tasks per child to prevent memory leaks. "
-                        "Default: BUCKET.json")
+                        "Default: BUCKET.{json,aof}")
     parser.add_argument("-l", "--loglevel",
                         help="logging verbosity. Default: warn",
                         type=lambda v: loglevels[v],
@@ -101,6 +109,21 @@ def parse_args():
     group.add_argument("--no-stream",
                        help="do not use streaming when keys are retrieved.",
                        action='store_false')
+    parser.add_argument("-F", "--format",
+                        help="output format: json or Redis protocol. "
+                        "Default: json",
+                        choices=["json", "redis"],
+                        default="json")
+    parser.add_argument("-d", "--redis-db",
+                        help="Redis database number. Default: 0",
+                        type=check_nonnegative,
+                        default=0)
+    parser.add_argument("-P", "--redis-prefix",
+                        help="prefix for all Redis keys. Default: \"\"",
+                        default="")
+    parser.add_argument("-a", "--redis-auth",
+                        help="Redis password. Default: None",
+                        default=None)
     args = parser.parse_args()
     return args
 
@@ -125,19 +148,18 @@ def init_child(env):
     child_env = env
 
 
-def handle_result(res, ct):
+def handle_result(key, value, ct):
     if ct == 'application/json':
-        out = json.dumps(json.loads(res))
+        return key, json.dumps(json.loads(value)), ct
     elif ct == 'text/plain':
-        out = json.dumps(res)
+        return key, value, ct
     else:
         raise ValueError("Unknown content-type in response.")
-    return out
 
 
 def get_key(key, tries=10, attempt=0):
     if attempt >= 10:
-        return
+        return key, None, None
 
     baseurl, timeout, logger = child_env
     url = baseurl + quote(key)
@@ -146,7 +168,7 @@ def get_key(key, tries=10, attempt=0):
         resp = urllib2.urlopen(url, timeout=timeout)
         res = resp.read()
         ct = resp.info().getheader('Content-Type')
-        res = handle_result(res, ct)
+        res = handle_result(key, res, ct)
 
     except urllib2.HTTPError as e:
         if e.code == 300:
@@ -166,7 +188,7 @@ def get_key(key, tries=10, attempt=0):
                                key=lambda m: parsedate(m['last-modified']))
 
                     try:
-                        res = handle_result(last.get_payload(),
+                        res = handle_result(key, last.get_payload(),
                                             last['content-type'])
                     except Exception as e:
                         logger.warn("Unable to retrieve subkeys of key %s: %s",
@@ -177,16 +199,16 @@ def get_key(key, tries=10, attempt=0):
                 else:
                     logger.warn("Unable to retrieve subkeys of key %s: %s",
                                 repr(key), str(e))
-                    return
+                    return key, None, None
 
         else:
             logger.warn("Unable to retrieve key %s: %s", repr(key), str(e))
-            return
+            return key, None, None
 
     except Exception as e:
         logger.warn("Unable to retrieve key %s: %s", repr(key), str(e))
-        return
-    return json.dumps(key) + ":  " + res
+        return key, None, None
+    return res
 
 
 def sig_handler(signal, frame):
@@ -195,8 +217,7 @@ def sig_handler(signal, frame):
 
 def make_bucket_url(bucket,
                     host="localhost", port=8098, bucket_type="default"):
-    return urlparse.urlunparse(
-                               ("http",
+    return urlparse.urlunparse(("http",
                                 "%s:%d" % (host, port),
                                 (("/types/" + quote(bucket_type)
                                   if bucket_type != "default"
@@ -226,13 +247,86 @@ def parse_keylist(keys_docs):
     return keys
 
 
+class BaseRecordWriter(object):
+    def __init__(self, output_file):
+        raise NotImplementedError()
+
+    def prolog(self):
+        raise NotImplementedError()
+
+    def epilog(self):
+        raise NotImplementedError()
+
+    def emit(self, key, value, content_type):
+        raise NotImplementedError()
+
+
+class JsonRecordWriter(BaseRecordWriter):
+    def __init__(self, output_file):
+        self.__out = output_file
+        self.__need_comma = False
+
+    def prolog(self):
+        self.__out.write("{\n")
+
+    def epilog(self):
+        self.__out.write("\n}\n")
+
+    def emit(self, key, value, content_type):
+        if content_type == 'application/json':
+            pass
+        elif content_type == 'text/plain':
+            value = json.dumps(value)
+        else:
+            raise ValueError('Unknown content type')
+
+        if self.__need_comma:
+            self.__out.write(",\n" + json.dumps(key) + ": " + value)
+        else:
+            self.__out.write(json.dumps(key) + ":  " + value)
+            self.__need_comma = True
+
+
+class RedisRecordWriter(BaseRecordWriter):
+    def __init__(self, output_file, db=0, prefix="", auth=None):
+        self.__out = output_file
+        self.__db = db
+        self.__prefix = prefix
+        self.__auth = auth
+        self.__need_comma = False
+
+    def gen_redis_proto(self, *args):
+        proto = ''
+        proto += '*' + str(len(args)) + '\r\n'
+        for arg in args:
+            arg = str(arg)
+            proto += '$' + str(len(arg)) + '\r\n'
+            proto += str(arg) + '\r\n'
+        return proto
+
+    def prolog(self):
+        if self.__auth:
+            self.__out.write(self.gen_redis_proto("AUTH", self.__auth))
+        self.__out.write(self.gen_redis_proto("SELECT", self.__db))
+
+    def epilog(self):
+        pass
+
+    def emit(self, key, value, content_type):
+        self.__out.write(self.gen_redis_proto("SET",
+                                              self.__prefix + key,
+                                              value))
+
+
 def main():
     signal.signal(signal.SIGINT, sig_handler)
     args = parse_args()
     out_filename = (args.output_file
                     if args.output_file
-                    else (args.bucket + ".json"))
-    out = open(out_filename, "w", 1)
+                    else (args.bucket + (".json"
+                                         if args.format == "json"
+                                         else ".aof")))
+    out = open(out_filename, "w" if args.format == 'json' else "wb", 1)
     logger = setup_logger(args.loglevel)
     logger.info("stream=%s", args.no_stream)
 
@@ -255,24 +349,22 @@ def main():
         args.workers, init_child, (env,), args.tasks_per_child)
 
     logger.info("Starting %d workers...", args.workers)
-    out.write("{\n")
-    last_res = None
+    writer = (JsonRecordWriter(out)
+              if args.format == "json"
+              else RedisRecordWriter(out,
+                                     args.redis_db,
+                                     args.redis_prefix,
+                                     args.redis_auth))
+    writer.prolog()
     counter = 0
-    for res in p.imap_unordered(get_key, keys, args.batch_size):
-        if res is not None:
-            if last_res is not None:
-                out.write(last_res + ",\n")
-            last_res = res
+    for key, value, ct in p.imap_unordered(get_key, keys, args.batch_size):
+        writer.emit(key, value, ct)
         counter += 1
         if counter % 10000 == 0:
-            logger.info(
-                "Processed %d records (%.2f%% completed).",
-                counter,
-                float(counter) / keys_count * 100)
+            logger.info("Processed %d records (%.2f%% completed).",
+                        counter, float(counter) / keys_count * 100)
 
-    if last_res is not None:
-        out.write(last_res + "\n")
-    out.write("}\n")
+    writer.epilog()
     logger.info("Finished.")
 
 
