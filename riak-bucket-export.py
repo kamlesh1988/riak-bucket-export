@@ -14,6 +14,7 @@ import os
 import email
 from email.utils import parsedate
 import tempfile
+import shutil
 
 ChildEnv = collections.namedtuple(
     'ChildEnv', ['base_url', 'timeout', 'logger'])
@@ -265,18 +266,29 @@ def bytes_from_file(f, chunksize=8192):
 def retrieve_keylist(keys_url, logger, timeout=None, max_mem=2**20):
     stream = urllib2.urlopen(keys_url, timeout=timeout)
     out = tempfile.SpooledTemporaryFile(max_mem)
-    count = 0
-    for doc in iterate_json_docs(bytes_from_file(stream)):
-        obj = json.loads(doc)
-        for key in obj["keys"]:
-            count += 1
-            out.write(quote(key) + '\n')
+    with tempfile.SpooledTemporaryFile(max_mem) as tmp:
+        shutil.copyfileobj(stream, tmp)
+        logger.info("Retrieved key list from server. Parsing...")
+        tmp.seek(0)
+        count = 0
+        for doc in iterate_json_docs(bytes_from_file(tmp)):
+            obj = json.loads(doc)
+            if "error" in obj:
+                raise RuntimeError("Bad response from server: %s" % obj["error"])
+            for key in obj["keys"]:
+                count += 1
+                out.write(key + '\0')
     out.seek(0)
-    logger.info("Retrieved key list from server. Parsing...")
 
     def feed_keys(f):
-        for line in f:
-            yield unquote(line).rstrip()
+        line = []
+        for ch in bytes_from_file(f):
+            if ch == '\0':
+                yield "".join(line)
+                del line
+                line = []
+            else:
+                line.append(ch)
     return count, feed_keys(out)
 
 
