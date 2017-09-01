@@ -13,7 +13,7 @@ import signal
 import os
 import email
 from email.utils import parsedate
-import string
+import tempfile
 
 ChildEnv = collections.namedtuple(
     'ChildEnv', ['base_url', 'timeout', 'logger'])
@@ -44,6 +44,7 @@ def check_port(value):
 
 
 quote = urllib.quote_plus
+unquote = urllib.unquote
 
 
 def parse_args():
@@ -246,12 +247,41 @@ def iterate_json_docs(docs):
     assert nesting == 0, "Unbalanced brackets while parsing JSON"
 
 
-def parse_keylist(keys_docs):
+def bytes_from_file(f, chunksize=8192):
+    while True:
+        chunk = f.read(chunksize)
+        if chunk:
+            for b in chunk:
+                yield b
+        else:
+            break
+
+
+def retrieve_keylist(keys_url, logger, timeout=None, max_mem=2**20):
+    stream = urllib2.urlopen(keys_url, timeout=timeout)
+    out = tempfile.SpooledTemporaryFile(max_mem)
+    count = 0
+    for doc in iterate_json_docs(bytes_from_file(stream)):
+        obj = json.loads(doc)
+        for key in obj["keys"]:
+            count += 1
+            out.write(quote(key))
+    out.seek(0)
+
+    def feed_keys(f):
+        for line in f:
+            yield unquote(line)
+    return count, feed_keys(out)
+
+
+def retrieve_keylist_inmemory(keys_url, logger, timeout=None):
+    keys_docs = urllib2.urlopen(keys_url, timeout=timeout).read()
+    logger.info("Retrieved key list from server. Parsing...")
     keys = []
     for doc in iterate_json_docs(keys_docs):
         obj = json.loads(doc)
         keys.extend(obj["keys"])
-    return keys
+    return len(keys), keys
 
 
 class BaseRecordWriter(object):
@@ -343,11 +373,8 @@ def main():
     keys_url += "?keys="
     keys_url += "stream" if args.no_stream else "true"
 
-    keys_docs = urllib2.urlopen(keys_url, timeout=args.list_timeout).read()
-    logger.info("Retrieved key list from server. Parsing...")
-
-    keys = parse_keylist(keys_docs)
-    keys_count = len(keys)
+    keys_count, keys = retrieve_keylist(
+        keys_url, logger, args.list_timeout)
     logger.info("Loaded key list from bucket %s: items count = %d",
                 (args.bucket_type, args.bucket), keys_count)
 
