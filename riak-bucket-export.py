@@ -44,7 +44,7 @@ def check_port(value):
 
 
 quote = urllib.quote_plus
-unquote = urllib.unquote
+unquote = urllib.unquote_plus
 
 
 def parse_args():
