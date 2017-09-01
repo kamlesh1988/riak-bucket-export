@@ -13,7 +13,7 @@ import signal
 import os
 import email
 from email.utils import parsedate
-import string
+import tempfile
 
 ChildEnv = collections.namedtuple(
     'ChildEnv', ['base_url', 'timeout', 'logger'])
@@ -44,6 +44,7 @@ def check_port(value):
 
 
 quote = urllib.quote_plus
+unquote = urllib.unquote_plus
 
 
 def parse_args():
@@ -125,6 +126,11 @@ def parse_args():
     parser.add_argument("-a", "--redis-auth",
                         help="Redis password. Default: None",
                         default=None)
+    parser.add_argument("-M", "--max-mem",
+                        help="memory limit for key list storage, in bytes. "
+                        "Default: 16M",
+                        type=check_nonnegative,
+                        default=16*2**10)
     args = parser.parse_args()
     return args
 
@@ -230,29 +236,48 @@ def make_bucket_url(bucket,
 
 
 def iterate_json_docs(docs):
-    view = buffer(docs)
-    start = 0
     nesting = 0
-    idx = 0
-    for c in view:
+    out = []
+    for c in docs:
+        out.append(c)
         if c == '{':
             nesting += 1
         elif c == '}':
             nesting -= 1
             assert nesting >= 0, "Unbalanced brackets while parsing JSON"
             if nesting == 0:
-                yield str(view[start:idx+1])
-                start = idx + 1
-        idx += 1
+                yield "".join(out)
+                del out
+                out = []
     assert nesting == 0, "Unbalanced brackets while parsing JSON"
 
 
-def parse_keylist(keys_docs):
-    keys = []
-    for doc in iterate_json_docs(keys_docs):
+def bytes_from_file(f, chunksize=8192):
+    while True:
+        chunk = f.read(chunksize)
+        if chunk:
+            for b in chunk:
+                yield b
+        else:
+            break
+
+
+def retrieve_keylist(keys_url, logger, timeout=None, max_mem=2**20):
+    stream = urllib2.urlopen(keys_url, timeout=timeout)
+    out = tempfile.SpooledTemporaryFile(max_mem)
+    count = 0
+    for doc in iterate_json_docs(bytes_from_file(stream)):
         obj = json.loads(doc)
-        keys.extend(obj["keys"])
-    return keys
+        for key in obj["keys"]:
+            count += 1
+            out.write(quote(key) + '\n')
+    out.seek(0)
+    logger.info("Retrieved key list from server. Parsing...")
+
+    def feed_keys(f):
+        for line in f:
+            yield unquote(line).rstrip()
+    return count, feed_keys(out)
 
 
 class BaseRecordWriter(object):
@@ -286,7 +311,7 @@ class JsonRecordWriter(BaseRecordWriter):
         elif content_type == 'text/plain':
             value = json.dumps(value)
         else:
-            raise ValueError('Unknown content type')
+            raise ValueError('Unknown content type: %s' % repr(content_type))
 
         if self.__need_comma:
             self.__out.write(",\n" + json.dumps(key) + ": " + value)
@@ -344,11 +369,8 @@ def main():
     keys_url += "?keys="
     keys_url += "stream" if args.no_stream else "true"
 
-    keys_docs = urllib2.urlopen(keys_url, timeout=args.list_timeout).read()
-    logger.info("Retrieved key list from server. Parsing...")
-
-    keys = parse_keylist(keys_docs)
-    keys_count = len(keys)
+    keys_count, keys = retrieve_keylist(
+        keys_url, logger, args.list_timeout, args.max_mem)
     logger.info("Loaded key list from bucket %s: items count = %d",
                 (args.bucket_type, args.bucket), keys_count)
 
@@ -366,7 +388,8 @@ def main():
     writer.prolog()
     counter = 0
     for key, value, ct in p.imap_unordered(get_key, keys, args.batch_size):
-        writer.emit(key, value, ct)
+        if value:
+            writer.emit(key, value, ct)
         counter += 1
         if counter % 10000 == 0:
             logger.info("Processed %d records (%.2f%% completed).",
