@@ -126,6 +126,11 @@ def parse_args():
     parser.add_argument("-a", "--redis-auth",
                         help="Redis password. Default: None",
                         default=None)
+    parser.add_argument("-M", "--max-mem",
+                        help="memory limit for key list storage, in bytes. "
+                        "Default: 16M",
+                        type=check_nonnegative,
+                        default=16*2**10)
     args = parser.parse_args()
     return args
 
@@ -365,7 +370,7 @@ def main():
     keys_url += "stream" if args.no_stream else "true"
 
     keys_count, keys = retrieve_keylist(
-        keys_url, logger, args.list_timeout)
+        keys_url, logger, args.list_timeout, args.max_mem)
     logger.info("Loaded key list from bucket %s: items count = %d",
                 (args.bucket_type, args.bucket), keys_count)
 
