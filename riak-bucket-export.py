@@ -230,20 +230,19 @@ def make_bucket_url(bucket,
 
 
 def iterate_json_docs(docs):
-    view = buffer(docs)
-    start = 0
     nesting = 0
-    idx = 0
-    for c in view:
+    out = []
+    for c in docs:
+        out.append(c)
         if c == '{':
             nesting += 1
         elif c == '}':
             nesting -= 1
             assert nesting >= 0, "Unbalanced brackets while parsing JSON"
             if nesting == 0:
-                yield str(view[start:idx+1])
-                start = idx + 1
-        idx += 1
+                yield "".join(out)
+                del out
+                out = []
     assert nesting == 0, "Unbalanced brackets while parsing JSON"
 
 
