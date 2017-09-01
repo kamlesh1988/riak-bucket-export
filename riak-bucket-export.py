@@ -7,6 +7,7 @@ import multiprocessing
 import logging
 import argparse
 import urlparse
+import json
 import collections
 import signal
 import os
@@ -228,21 +229,28 @@ def make_bucket_url(bucket,
                                 ""))
 
 
+def iterate_json_docs(docs):
+    view = buffer(docs)
+    start = 0
+    nesting = 0
+    idx = 0
+    for c in view:
+        if c == '{':
+            nesting += 1
+        elif c == '}':
+            nesting -= 1
+            assert nesting >= 0, "Unbalanced brackets while parsing JSON"
+            if nesting == 0:
+                yield str(view[start:idx+1])
+                start = idx + 1
+        idx += 1
+    assert nesting == 0, "Unbalanced brackets while parsing JSON"
+
+
 def parse_keylist(keys_docs):
     keys = []
-    decoder = json.JSONDecoder()
-    index = 0
-    L = len(keys_docs)
-    while True:
-        while True:
-            if index < L and keys_docs[index] in string.whitespace:
-                index += 1
-            else:
-                break
-        if index >= L:
-            break
-        obj, delta = decoder.raw_decode(buffer(keys_docs, index))
-        index += delta
+    for doc in iterate_json_docs(keys_docs):
+        obj = json.loads(doc)
         keys.extend(obj["keys"])
     return keys
 
@@ -369,11 +377,4 @@ def main():
 
 
 if __name__ == '__main__':
-    try:
-        import _json
-        del _json
-        sys.modules['_json'] = None
-    except:
-        pass
-    import json
     main()
