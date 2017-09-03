@@ -127,6 +127,10 @@ def parse_args():
     parser.add_argument("-a", "--redis-auth",
                         help="Redis password. Default: None",
                         default=None)
+    parser.add_argument("--redis-prepend-content-type",
+                        help="prepend every value of Redis keys with of "
+                        "Content-Type header",
+                        action='store_true')
     parser.add_argument("-M", "--max-mem",
                         help="memory limit for key list storage, in bytes. "
                         "Default: 16M",
@@ -274,7 +278,8 @@ def retrieve_keylist(keys_url, logger, timeout=None, max_mem=2**20):
         for doc in iterate_json_docs(bytes_from_file(tmp)):
             obj = json.loads(doc)
             if "error" in obj:
-                raise RuntimeError("Bad response from server: %s" % obj["error"])
+                raise RuntimeError("Bad response from server: %s"
+                                   % obj["error"])
             for key in obj["keys"]:
                 count += 1
                 out.write(key + '\0')
@@ -333,12 +338,13 @@ class JsonRecordWriter(BaseRecordWriter):
 
 
 class RedisRecordWriter(BaseRecordWriter):
-    def __init__(self, output_file, db=0, prefix="", auth=None):
+    def __init__(self,
+                 output_file, db=0, prefix="", auth=None, prepend_ct=False):
         self.__out = output_file
         self.__db = db
         self.__prefix = prefix
         self.__auth = auth
-        self.__need_comma = False
+        self.__prepend_ct = prepend_ct
 
     def gen_redis_proto(self, *args):
         proto = ''
@@ -358,6 +364,8 @@ class RedisRecordWriter(BaseRecordWriter):
         pass
 
     def emit(self, key, value, content_type):
+        if self.__prepend_ct:
+            value = content_type + '\n' + value
         self.__out.write(self.gen_redis_proto("SET",
                                               self.__prefix + key,
                                               value))
@@ -396,7 +404,8 @@ def main():
               else RedisRecordWriter(out,
                                      args.redis_db,
                                      args.redis_prefix,
-                                     args.redis_auth))
+                                     args.redis_auth,
+                                     args.redis_prepend_content_type))
     writer.prolog()
     counter = 0
     for key, value, ct in p.imap_unordered(get_key, keys, args.batch_size):
