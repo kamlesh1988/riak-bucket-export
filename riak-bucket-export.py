@@ -17,7 +17,7 @@ import tempfile
 import shutil
 
 ChildEnv = collections.namedtuple(
-    'ChildEnv', ['base_url', 'timeout', 'logger'])
+    'ChildEnv', ['base_url', 'timeout', 'logger', 'compact_json'])
 
 
 def check_positive(value):
@@ -131,6 +131,9 @@ def parse_args():
                         help="prepend every value of Redis keys with of "
                         "Content-Type header",
                         action='store_true')
+    parser.add_argument("--no-json-compact",
+                        help="do not compact json keys",
+                        action='store_true')
     parser.add_argument("-M", "--max-mem",
                         help="memory limit for key list storage, in bytes. "
                         "Default: 16M",
@@ -160,9 +163,9 @@ def init_child(env):
     child_env = env
 
 
-def handle_result(key, value, ct):
+def handle_result(key, value, ct, comp_json=True):
     if ct == 'application/json':
-        return key, json.dumps(json.loads(value)), ct
+        return key, json.dumps(json.loads(value)) if comp_json else value, ct
     elif ct == 'text/plain':
         return key, value, ct
     else:
@@ -173,14 +176,14 @@ def get_key(key, tries=10, attempt=0):
     if attempt >= 10:
         return key, None, None
 
-    baseurl, timeout, logger = child_env
+    baseurl, timeout, logger, compact_json = child_env
     url = baseurl + quote(key)
 
     try:
         resp = urllib2.urlopen(url, timeout=timeout)
         res = resp.read()
         ct = resp.info().getheader('Content-Type')
-        res = handle_result(key, res, ct)
+        res = handle_result(key, res, ct, compact_json)
 
     except urllib2.HTTPError as e:
         if e.code == 300:
@@ -201,10 +204,12 @@ def get_key(key, tries=10, attempt=0):
 
                     try:
                         res = handle_result(key, last.get_payload(),
-                                            last['content-type'])
+                                            last['content-type'],
+                                            compact_json)
                     except Exception as e:
                         logger.warn("Unable to retrieve subkeys of key %s: %s",
                                     repr(key), str(e))
+                        return key, None, None
 
                 elif e.code == 406:
                     return get_key(key, tries, attempt + 1)
@@ -394,7 +399,10 @@ def main():
     logger.info("Loaded key list from bucket %s: items count = %d",
                 (args.bucket_type, args.bucket), keys_count)
 
-    env = ChildEnv(bucket_base_url + "/", args.key_timeout, logger)
+    env = ChildEnv(bucket_base_url + "/",
+                   args.key_timeout,
+                   logger,
+                   not args.no_json_compact)
     p = multiprocessing.Pool(
         args.workers, init_child, (env,), args.tasks_per_child)
 
