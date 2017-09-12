@@ -121,6 +121,10 @@ def parse_args():
                         help="Redis database number. Default: 0",
                         type=check_nonnegative,
                         default=0)
+    parser.add_argument("--redis-ttl",
+                        help="TTL for Redis keys. Default: infinite",
+                        type=check_nonnegative,
+                        default=None)
     parser.add_argument("-P", "--redis-prefix",
                         help="prefix for all Redis keys. Default: \"\"",
                         default="")
@@ -344,12 +348,14 @@ class JsonRecordWriter(BaseRecordWriter):
 
 class RedisRecordWriter(BaseRecordWriter):
     def __init__(self,
-                 output_file, db=0, prefix="", auth=None, prepend_ct=False):
+                 output_file, db=0, prefix="",
+                 auth=None, prepend_ct=False, ttl=None):
         self.__out = output_file
         self.__db = db
         self.__prefix = prefix
         self.__auth = auth
         self.__prepend_ct = prepend_ct
+        self.__ttl = ttl
 
     def gen_redis_proto(self, *args):
         proto = ''
@@ -371,9 +377,15 @@ class RedisRecordWriter(BaseRecordWriter):
     def emit(self, key, value, content_type):
         if self.__prepend_ct:
             value = content_type + '\n' + value
-        self.__out.write(self.gen_redis_proto("SET",
-                                              self.__prefix + key,
-                                              value))
+        if self.__ttl is None:
+            self.__out.write(self.gen_redis_proto("SET",
+                                                  self.__prefix + key,
+                                                  value))
+        else:
+            self.__out.write(self.gen_redis_proto("SETEX",
+                                                  self.__prefix + key,
+                                                  self.__ttl,
+                                                  value))
 
 
 def main():
@@ -413,7 +425,8 @@ def main():
                                      args.redis_db,
                                      args.redis_prefix,
                                      args.redis_auth,
-                                     args.redis_prepend_content_type))
+                                     args.redis_prepend_content_type,
+                                     args.redis_ttl))
     writer.prolog()
     counter = 0
     for key, value, ct in p.imap_unordered(get_key, keys, args.batch_size):
