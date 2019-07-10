@@ -15,6 +15,7 @@ import email
 from email.utils import parsedate
 import tempfile
 import shutil
+# import urllib
 
 ChildEnv = collections.namedtuple(
     'ChildEnv', ['base_url', 'timeout', 'logger', 'compact_json'])
@@ -44,7 +45,8 @@ def check_port(value):
     return ivalue
 
 
-quote = urllib.quote_plus
+quote = urllib.quote
+# quote = urllib.quote_plus
 unquote = urllib.unquote_plus
 
 
