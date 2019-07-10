@@ -174,7 +174,7 @@ def handle_result(key, value, ct, comp_json=True):
     elif ct == 'text/plain':
         return key, value, ct
     if ct == 'application/octet-stream':
-        return key, value, ct
+        return key, value, 'application/json'
     else:
         raise ValueError("Unknown content-type in response.")
 
