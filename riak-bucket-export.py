@@ -168,9 +168,12 @@ def init_child(env):
 
 
 def handle_result(key, value, ct, comp_json=True):
+    # print("content type : %s, %s",ct,value)
     if ct == 'application/json':
         return key, json.dumps(json.loads(value)) if comp_json else value, ct
     elif ct == 'text/plain':
+        return key, value, ct
+    if ct == 'application/octet-stream':
         return key, value, ct
     else:
         raise ValueError("Unknown content-type in response.")
