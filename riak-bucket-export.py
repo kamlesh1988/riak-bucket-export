@@ -142,7 +142,7 @@ def parse_args():
                         help="memory limit for key list storage, in bytes. "
                         "Default: 16M",
                         type=check_nonnegative,
-                        default=16*2**10)
+                        default=1024*2**10)
     args = parser.parse_args()
     return args
 
